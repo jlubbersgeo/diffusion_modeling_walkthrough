@@ -1,0 +1,1 @@
+A website that walks through the explicit finite difference method for modeling diffusion in minerals. The website can be found [here](https://jlubbersgeo.github.io/diffusion_modeling_walkthrough/numerical_modeling_walkthrough.html)
