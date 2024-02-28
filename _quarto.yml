@@ -2,7 +2,8 @@ project:
   type: website
   output-dir: docs
 format:
-  theme: 
+  html:
+    date-modified: today
     toc: true
     code-fold: true
     code-summary: "Show the code"
