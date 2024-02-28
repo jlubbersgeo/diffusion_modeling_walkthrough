@@ -1,0 +1,19 @@
+name: diffusion_workshop
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.12
+  - numpy
+  - pandas
+  - matplotlib
+  - scipy
+  - ca-certificates
+  - openssl
+  - ipykernel
+  - openpyxl
+  - uncertainties
+  - mendeleev
+  - statsmodels
+  - tqdm
+prefix: C:\Users\jlubbers\AppData\Local\mambaforge\envs\diffusion_workshop

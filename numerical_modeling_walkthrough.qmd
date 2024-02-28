@@ -1,0 +1,2171 @@
+---
+title: Modeling Diffusion in Volcanic Minerals
+subtitle: An Explicit Finite Difference Approach
+author:
+  - name: Jordan Lubbers
+    affiliations:
+      - name: USGS Alaska Volcano Observatory
+        address: 4230 University Dr, Anchorage Alaska
+
+
+
+format:
+  html: 
+    date-modified: today
+    toc: true
+    code-fold: true
+    code-summary: "Show the code"
+    code-overflow: scroll
+    code-block-border-left: "#007150"
+    code-block-background: true
+    code-line-numbers: true
+    code-copy: hover
+    code-tools: true
+    highlight-style: breeze
+    standalone: true
+    warning: false
+    freeze: true
+    embed-resources: true
+    page-layout: full
+    theme: 
+        light: [sandstone, theme_html_light.scss]
+        dark: [slate, theme_html_dark.scss]
+    bibliography: bibliography.bib
+
+
+#   pdf:
+#     mainfont: CMU Sans Serif
+#     toc: true
+#     toc-title: Contents
+#     number-sections: false
+#     dpi: 600
+#     code-line-numbers: true
+#     highlight-style: tango
+#     geometry:
+#       - left=10mm
+#       - right=10mm
+#     fig-align: center
+#     warning: false
+
+
+---
+
+Before we get started some background reading/resources:
+
+- Diffusion modeling
+  - [Time Scales of Magmatic Processes from Modeling the Zoning Patterns of Crystals](https://doi.org/10.2138/rmg.2008.69.14)
+  - [Clocks in Magmatic Rocks](https://doi.org/10.1146/annurev-earth-080320-060708)
+- Finite Difference
+  - [Finite Difference Computing with PDEs - A Modern Software Approach](https://hplgit.github.io/fdm-book/doc/pub/book/pdf/fdm-book-4screen.pdf)
+- Python
+  - [Python Data Science Handbook](https://jakevdp.github.io/PythonDataScienceHandbook/)
+  - [Intro to Numpy arrays](https://betterprogramming.pub/numpy-illustrated-the-visual-guide-to-numpy-3b1d4976de1d)
+  - [Scientific Visualization: Python + Matplotlib](https://inria.hal.science/hal-03427242/document)
+
+## Creating our Python virtual environment
+
+To work on this notebook we will operate in a python [virtual environment](https://realpython.com/python-virtual-environments-a-primer/). You can think of this as a _containerized_ way of running specific versions of python and various libraries. This is useful for sharing code that you need to be reproducible in the long-term (e.g., research results). To set it up, we'll use [Anaconda](https://www.anaconda.com/download), terminal window, and an `environment.yml` file. This will install all the requisite libraries and version of python.
+
+```bash
+cd path\to\environment.yml
+conda env create -f environment.yml
+conda env list # check to make sure everything is installed
+```
+
+Regardless of which IDE you're working in, just choose this virtual environment as the one you want to use: `diffusion_workshop`.
+
+## Fick's Second Law
+
+The diffusion equation, described by Fick's 2<sup>nd</sup> Law [@fick1855v], explains the way that concentration gradients in minerals change over time. In its most basic form:
+
+$$
+\frac{\delta C(x,t)}{\delta t} = D\frac{\delta^2C(x,t)}{\delta x^2}
+$$
+
+
+::: {.callout-note collapse="true"}
+## Re-purpose the equations
+
+Right-click on an equation to show the math as `Tex Commands` and copy the formula that created it for use in any text editor that supports $\LaTeX$.
+:::
+
+This solution is valid when $D$, the diffusion coefficient, is constant and independent of composition ($C$) or distance ($x$), otherwise the diffusion equation takes the following form:
+
+$$
+\frac{\delta C(x,t)}{\delta t} = \frac{\delta D}{\delta x}\frac{\delta C(x,t)}{\delta x}+\frac{\delta^2C(x,t)}{\delta x^2}
+$$
+
+To model this behavior we can use the explicit finite difference method, specifically forward in time and centered in space. Below we will walk through both solutions to the diffusion equation. For more information on the mathematics of diffusion, the following are excellent resources:
+
+- @costa2008time
+- @crank1979mathematics
+
+## Finite Difference Method
+
+In brief, to model the diffusion equation using the explicit finite difference method we must:
+
+1. discretize the domain by creating a grid of distance ($i$) and time ($j$) points
+2. replace derivatives by finite differences
+3. formulate a recursive way to calculate the solution at each discrete point
+
+Let's get started by importing the various libraries we'll need. In general, we'll be able to accomplish all the tasks we need with three of the core libraries of the scientific python stack:
+
+1. [Numpy](https://numpy.org/): fast numerical operations on n-dimensional arrays. Built on top of C code, optimized numpy code is quite quick.
+2. [Pandas](https://pandas.pydata.org/): for working with and doing statistics on tabular data. The backbone of this is the pandas `DataFrame` that in many ways feels like an excel spreadsheet on steroids.
+3. [matplotlib](https://matplotlib.org/): Visualization with python. Their documentation says it best: "Matplotlib makes easy things easy and hard thins possible."
+
+While there are many fantastic libraries created by open-source contributors, the benefits of minimizing our dependencies are mainly in the following areas:
+
+- <u>stability</u>: The APIs for these libraries, as they are so popular, does not change that much. This means our code is more robust to version changes.
+- <u>documentation</u>: Every one of these libraries has fantastic documentation to help you understand how to use them to their full potential.
+- <u>ubiquity</u>: Anyone working within the scientific python ecosystem will understand what you are talking about when you say you use these libraries.
+- <u>installation</u>: creating a virtual environment with these three libraries will keep your installation quite lightweight should you choose to distribute it.
+
+```{python}
+import numpy as np
+import pandas as pd
+import matplotlib
+import matplotlib.pyplot as plt
+import uncertainties
+from uncertainties import unumpy, ufloat
+
+#-----custom plot appearance for this demo-----
+import mpl_defaults
+#----------------------------------------------
+
+
+print("VERSIONS USED:")
+print(f"numpy: {np.__version__}")
+print(f"pandas: {pd.__version__}")
+print(f"matplotlib: {matplotlib.__version__}")
+print(f"uncertainties: {uncertainties.__version__}")
+```
+
+Below is a generalized finite difference grid. The idea behind this is to start from some initial model condition (row 0 below; where diffusion starts from) and iterate forward in time to t $>> 0$, generating a diffusion model curve at each iteration. We can then compare each model curve to our observed analytical transect to find which model best represents it.
+
+```{python}
+x = np.linspace(0, 10, 6)
+y = np.linspace(0, 10, 6)
+
+xx, yy = np.meshgrid(x, y)
+
+
+fig, ax = plt.subplots(figsize=(4,4))
+ax.set_aspect(1)
+ax.plot(
+    xx,
+    yy,
+    ls="",
+    marker="o",
+    mfc="white",
+)
+ax.minorticks_off()
+ax.set_xlabel("Distance (i)")
+ax.set_ylabel("Time (j)")
+
+i_idx = 3
+
+for val, label in zip([-1, 0, 1], ["i-1,j", "i,j", "i+1,j"]):
+    ax.text(xx[:, i_idx + val].mean()-.5, 4.5, f"C$_{{{label}}}$")
+
+ax.text(xx[:, i_idx].mean()-0.5, 6.5, "C$_{i,j+1}$")
+
+ax.annotate("", (2, 0), xytext=(4, 0), arrowprops=dict(
+    arrowstyle="|-|",
+    color="k", shrinkA=6, shrinkB=6, mutation_scale=3
+),)
+ax.text(2.6, .25, r"$\Delta$ x")
+
+ax.annotate("", (2, 0), xytext=(2, 2), arrowprops=dict(
+    arrowstyle="|-|",
+    color="k", shrinkA=6, shrinkB=6, mutation_scale=3
+),)
+ax.text(1.2, .9, r"$\Delta$ t", rotation=90)
+ax.set_title('Generic Finite Difference Grid', loc='left', y=1.05,fontsize = 14)
+plt.show()
+```
+
+### Constant D solution
+
+Below we walk through some basic calculus and algebra to show how to discretize some solutions to the diffusion equation. We will start with the basics.
+
+$$
+\frac{\delta C}{\delta t} = D\frac{\delta^2C}{\delta x^2}
+$$
+
+$$
+\frac{\delta C}{\delta x} = S
+$$
+
+$$
+\frac{\delta C}{\delta t} = D\frac{\delta S}{\delta x}
+$$
+
+Now we use $j$ to denote steps in time and $i$ to denote steps in space.
+
+$$
+\frac{C_{i,j+1}-C_{i,j}}{\Delta t} = D\frac{S_{i+1,j}-S_{i,j}}{\Delta x}
+$$
+
+<center> since $S = \frac{\delta C}{\delta x} = \frac{C_{i} - C_{i-1}}{\Delta x}$ </center>
+
+$$
+\frac{C_{i,j+1}-C_{i,j}}{\Delta t} = D\left[\frac{C_{i+1,j}-C_{i,j}}{\Delta x}-\frac{C_{i,j}-C_{i-1,j}}{\Delta x}\right]\frac{1}{\Delta x}
+$$
+
+$$
+\frac{C_{i,j+1}-C_{i,j}}{\Delta t} = D\frac{C_{i+1,j}-2C_{i,j}+C_{i-1,j}}{\Delta x^2}
+$$
+
+:::{.callout-tip title="Final Solution" icon="false"}
+$$
+{C_{i,j+1} = C_{i,j}+\frac{D\Delta t}{\Delta x^2}\left[C_{i+1,j}-2C_{i,j}+C_{i-1,j}\right]}
+$$
+:::
+
+This explains how the concentration of a point in space ($i$) changes with time ($j$) and we see that, importantly, the concentration of any point is determined by the concentrations of the points around it.
+
+### Concentration Dependent D Solution
+
+This is very similar to the constant D solution, with a couple added derivatives that pertain to a changing D with distance and concentration.
+
+$$
+\frac{\delta C}{\delta t} = \frac{\delta D}{\delta x}\frac{\delta C}{\delta x}+D\frac{\delta^2C}{\delta x^2}
+$$
+
+<center> Again, let $\frac{\delta C}{\delta x} = S$ </center>
+
+$$
+\frac{C_{i,j+1}-C_{i,j}}{\Delta t} = \left(\frac{D_{i+1,j}-D_{i,j}}{\Delta x}\right)\left(\frac{C_{i+1,j}-C_{i,j}}{\Delta x}\right)+D_i\frac{S_{i+1,j}-S_{i,j}}{\Delta x}
+$$
+
+<center> since $S = \frac{\delta C}{\delta x} = \frac{C_{i} - C_{i-1}}{\Delta x}$ </center>
+
+$$
+\frac{C_{i,j+1}-C_{i,j}}{\Delta t} = \left(\frac{D_{i+1,j}-D_{i,j}}{\Delta x}\right)\left(\frac{C_{i+1,j}-C_{i,j}}{\Delta x}\right)+D_i\left[\frac{C_{i+1,j}-C_{i,j}}{\Delta x}-\frac{C_{i,j}-C_{i-1,j}}{\Delta x}\right]\frac{1}{\Delta x}
+$$
+
+$$
+\frac{C_{i,j+1}-C_{i,j}}{\Delta t} = \left(\frac{D_{i+1,j}-D_{i,j}}{\Delta x}\right)\left(\frac{C_{i+1,j}-C_{i,j}}{\Delta x}\right)+D_i\left[\frac{C_{i+1,j}-2C_{i,j}+C_{i-1,j}}{\Delta x^2}\right]
+$$
+
+:::{.callout-tip title="Final Solution" icon="false"}
+$$
+C_{i,j+1} = C_{i,j} + \Delta t\left[\left(\frac{D_{i+1,j}-D_{i,j}}{\Delta x}\right)\left(\frac{C_{i+1,j}-C_{i,j}}{\Delta x}\right)+D_i\left(\frac{C_{i+1,j}-2C_{i,j}+C_{i-1,j}}{\Delta x^2}\right)\right]
+$$
+:::
+
+Great! With these two solutions, we now have a way to model diffusive equilibration in most mineral - element systems!
+
+### Numerical Stability
+
+A key limitation of the explicit finite difference method is that it has the potential to become numerically unstable. This is determined by whether or not the Courant condition is fulfilled. For the diffusion equation in 1D, the Courant condition can be defined as:
+
+$$
+r = \frac{D\Delta t}{\Delta x^2} < 0.5
+$$
+
+Note that for 2D diffusion this condition changes to .25 and for 3D diffusion it reduces even further to .125.
+
+In modeling diffusion of cations in natural minerals, we are of course limited by a few things:
+
+- the value of the diffusion coefficient, $D$, is set based on the mineral/element system of interest and the temperature we are modeling at.
+- the $\Delta x$ of our model is set based on our analytical resolution.
+
+Ultimately, both of these aspects put a limit on the $\Delta t$ of our model if we want it to be numerically stable. This then suggests that every mineral/element system has a temporal limit on how large of a time step can be modeled. For example, over the same x-grid, slow diffusing elements must have either a larger $\Delta t$ or smaller $\Delta x$ than fast diffusing elements to still be numerically stable. Furthermore, our $D$ values and analytical resolution ($\Delta x$) determine the lower limit we can model diffusion at. A good read on this is found in @bradshaw2017analytical. In brief, the shortest timescale that can be accurately estimated within 20% for a given spatial resolution ($x$) and diffusion coefficient ($D$) is:
+
+$$
+t_{20} = [8.06\times 10^{-21}x^2]D^{-1}
+$$
+
+where $x$ is in $\mu m$, and $D$ is in $\frac{\mu m^2}{s}$.
+
+## Implementation
+
+With a way to discretize the diffusion equation and an understanding of the limits of its numerical stability we are now able to begin some basic modeling! Conceptually this consists of
+
+1. Start with an initial profile
+
+
+```{python}
+resolution = 5  # um
+
+C = np.full(20, 300)
+C[C.shape[0] // 2:] = 50
+
+distance = np.arange(0, C.shape[0]) * resolution
+
+fig, ax = plt.subplots(figsize=(4, 4))
+ax.plot(distance, C, marker="o", mfc="whitesmoke", mec="C0")
+ax.set_xlabel(r"Distance ($\mu$m)")
+ax.set_ylabel("Concentration")
+plt.show()
+```
+
+2. create a 1D timegrid to iterate over
+
+```{python}
+# Set up a time grid with some options
+# The end result is a timegrid where each value
+# is in seconds spaced by a user defined dt
+
+
+sinyear = 60 * 60 * 24 * 365.25
+tenthsofyear = sinyear / 10
+days = sinyear / 365.25
+months = sinyear / 12
+hours = sinyear / 8760
+
+timestep = "years"
+iterations = 1e4
+
+
+if timestep == "days":
+    step = days
+elif timestep == "months":
+    step = months
+elif timestep == "hours":
+    step = hours
+elif timestep == "tenths":
+    step = tenthsofyear
+elif timestep == "years":
+    step = sinyear
+# create a time grid that starts at 0
+# goes to n iterations and is spaced by
+# the desired step.
+timegrid = np.arange(0, iterations * step + 1, step)
+dx = distance[1] - distance[0]
+dt = timegrid[1] - timegrid[0]
+
+print(f"you have {timegrid.shape[0]} points in your timegrid")
+print(f"that are spaced by {dt} s")
+```
+3. apply the discretized diffusion equation at each point in the timegrid to the data from the previous iteration
+4. save the results of each iteration for later use
+
+We'll start with a double "`for` loop" approach. This is easier to read and conceptualize, but at a cost to performance. Let's generate an initial profile, set some parameters, and forward model diffusion over our timegrid:
+
+```{python}
+# conditions for calculating diffusivity of element in mineral
+# Sr in amphibole from Brabander and Giletti 1995
+Do = 4.9 * 10**-8  # pre exponential constant
+E = 260e3  # activation energy
+T_K = 850 + 273.15  # K
+R = 8.314  # J/molK
+D = (Do * np.exp(-E / (R * T_K))) * 1e12  # um/s
+
+r = (D * dt) / dx**2  # constant
+
+# number of points in space and time
+ni, nj = distance.shape[0], timegrid.shape[0]
+
+curves = np.empty((nj, ni))  # container for model curves at each timestep
+
+
+curves[0, :] = C.copy()  # initial profile
+
+for j in range(0, nj - 1):  # time
+    for i in range(1, ni - 1):  # space
+        curves[j + 1, i] = curves[j, i] + r * (
+            curves[j, i - 1] - 2 * curves[j, i] + curves[j, i + 1]
+        )  # inner points
+        curves[j + 1, 0] = C[0]  # fix left point
+        curves[j + 1, -1] = C[-1]  # fix right point
+
+```
+Visualize the results:
+```{python}
+plot_iterations = [10, 50, 100, 250]
+
+
+fig, ax = plt.subplots(
+    1,
+    2,
+    figsize=(8,4),
+    layout=None,
+)
+ax[1].remove()
+ax[1] = fig.add_subplot(1, 2, 2, projection="3d")
+
+
+xx, yy = np.meshgrid(distance, np.arange(0, timegrid.shape[0]))
+
+max_iter = plot_iterations[-1]
+
+ax[0].plot(distance, C, c="k", label="initial")
+ax[1].plot_surface(
+    xx[:max_iter], yy[:max_iter], 
+    curves[:max_iter], 
+    antialiased=False, 
+    cmap="viridis"
+)
+
+for iteration in plot_iterations:
+
+    ax[0].plot(
+        distance, curves[iteration, :],
+        marker="o", 
+        label=f"iteration {iteration}"
+    )
+
+    ax[1].plot(
+        distance,
+        curves[iteration],
+        zs=yy[iteration],
+        marker="o",
+        ms=4,
+        lw=1,
+        ls="--",
+        zdir="y",
+        zorder=10,
+    )
+ax[0].legend(loc="upper right")
+ax[0].set_xlabel(r"Distance ($\mu$m)")
+ax[0].set_ylabel("Concentration")
+
+ax[1].set_facecolor("w")
+ax[1].view_init(25, -70, 0)
+ax[1].set_box_aspect(aspect=None, zoom=0.8)
+ax[1].set_xlabel("Distance", fontsize=10)
+ax[1].set_ylabel("iterations", fontsize=10, labelpad=5)
+ax[1].set_zlabel("Concentration", fontsize=10)
+ax[1].set_title("Finite difference model space", fontsize=16, y=0.95)
+
+plt.show()
+```
+
+We did it! While this is a totally valid approach to implementing the discretized version of the diffusion equation and can be considered a "scalar" approach to the problem, this commits one of the pseudo-sins of programming: an excessive `for` loop. With a little cleverness in thinking about our data structures (e.g., the Numpy `ndarray`), we can vectorize the solution such that there is only one `for` loop: the one that iterates through time.
+
+Consider our finite difference grid from before. We will now display it with our diffusion model data:
+
+```{python}
+xx, yy = np.meshgrid(distance, timegrid[:10])
+idx = 10
+
+fig, ax = plt.subplots(figsize=(5, 5))
+ax.plot(
+    xx,
+    yy,
+    ls="",
+    marker="o",
+    mfc="white",
+)
+ax.minorticks_off()
+ax.set_xlabel("Distance (i)")
+ax.set_ylabel("Time (j)")
+plt.show()
+```
+
+Now, let's take the same 1D array of concentration values at a given timestep and index them in three different ways such that they are the same length, but all start and stop at different points:
+
+```python
+C[1:ni-1] #Ci
+C[0:ni-2] #Ci-1
+C[2:ni]   #Ci+1
+```
+
+Below this is shown by the colored lines. They are plotted at different timesteps for visualization purposes, but you can see that they are now staggered. Because, however, they are all the same shape, if we index them at the same location (red x marks in the plot below) or when we do element-by-element matrix math we can see that we have created the equivalent C<sub>i</sub>, C<sub>i-1</sub>, C<sub>i+1</sub> structure of the scalar approach!
+
+```{python}
+xx, yy = np.meshgrid(distance, timegrid[:10])
+idx = 10
+
+
+fig, ax = plt.subplots(figsize=(5, 5))
+ax.plot(xx[0, 1:ni-1], yy[0, 1:ni-1], label="C$_i$")
+ax.plot(xx[0, 0: ni - 2], yy[1, 0: ni - 2], label="C$_{i-1}$")
+ax.plot(xx[0, 2:ni], yy[2, 2:ni], label="C$_{i+1}$")
+ax.plot(
+    xx,
+    yy,
+    ls="",
+    marker="o",
+    mfc="white",
+)
+
+
+ax.plot(xx[0, 1:ni-1][idx], yy[0, 0], 'rX', label=f"slice index {idx}")
+ax.plot(xx[0, 0: ni - 2][idx], yy[1, 0], 'rX')
+ax.plot(xx[0, 2:ni][idx], yy[2, 0], 'rX')
+fig.legend(loc='right', bbox_to_anchor=(1.3, .9))
+ax.minorticks_off()
+ax.set_xlabel("Distance (i)")
+ax.set_ylabel("Time (j)")
+plt.show()
+```
+
+Let's implement this for our diffusion model:
+
+```{python}
+c = np.zeros(ni)
+# this will eventually be the previous iteration, but we start it at
+# our initial profile
+c_n = C.copy()
+
+curves2 = np.zeros((nj, ni))
+curves2[0, :] = C.copy()  # initial profile
+
+for j in range(0, nj - 1):
+    curves2[j + 1, 1: ni - 1] = curves2[j, 1: ni - 1] + r * (
+        curves2[j, 0: ni - 2] - 2 * curves2[j, 1: ni - 1] + curves2[j, 2:ni]
+    )
+    curves2[j + 1, 0] = C[0]  # fix left point
+    curves2[j + 1, -1] = C[-1]  # fix right point
+```
+
+Using some jupyter magic commands to time code blocks, we see that there is a sizeable performance boost to the vectorized approach. This only gets exaggerated as the solution to the diffusion equation you are modeling becomes more complicated (e.g., non constant D value, solution for plagioclase, diffusion in multiple dimension).
+
+
+Scalar approach:
+```{python}
+%%timeit
+for j in range(0,nj-1): # time
+        for i in range(1,ni-1): # space
+            curves[j+1,i] = curves[j,i] + r*(curves[j,i-1] - 2*curves[j,i] \
+             + curves[j,i+1])
+            curves[j+1,0] = C[0] # fix left point
+            curves[j+1,-1] = C[-1] # fix right point
+```
+Vectorized approach:
+```{python}
+%%timeit
+for j in range(0,nj-1):
+    curves2[j+1,1 : ni - 1] = curves2[j,1 : ni - 1] + r * (curves2[j,0 : ni - 2] \
+        - 2 * curves2[j,1 : ni - 1] + curves2[j,2:ni])
+    curves2[j+1,0] = C[0] # fix left point
+    curves2[j+1,-1] = C[-1] # fix right point
+```
+We confirm that they are doing the exact samething:
+```{python}
+plot_iteration = 50
+fig, ax = plt.subplots(figsize = (4,4))
+ax.plot(distance, C, marker="o", mfc="whitesmoke", mec="C0", label="initial")
+ax.plot(distance, curves2[plot_iteration, :], lw=3, label="double for loop")
+ax.plot(distance, curves[plot_iteration, :], ls="--", c="k", label="vectorized")
+
+ax.set_xlabel(r"Distance ($\mu$m)")
+ax.set_ylabel("Concentration")
+ax.legend(loc="upper right")
+
+plt.show()
+```
+
+## Real World Examples
+
+Below we'll go through some real world examples to show how you may set this up in your own research. This will discuss the following topics:
+
+- Fe-Mg in orthopyroxene
+- Fe-Mg in olivine
+
+In general we will need a few things:
+
+1. some observed compositional profiles across a zone boundary
+2. the rate at which the specified components diffuse through the mineral system
+3. some decent estimate from which the mineral composition was when it crystallized
+
+### Fe-Mg in orthopyroxene
+
+The interdiffusion coefficient for Fe-Mg in orthopyroxene was experimentally determined by @dohmen2016fe. For diffusion parallel to the c-axis and for compositions with $0.09 < X_{Fe} < 0.5$:
+
+$$
+D_{Fe-Mg} = 1.12\times 10^{-6}{f_{O_2}}^{0.053\pm 0.027}(10^{X_{Fe} - 0.09})\exp{\left[\frac{-308\pm 23}{RT}\right]}
+$$
+
+where D is in $\frac{m^2}{s}$, $f_{O_2}$ is in $Pa$, and the activation energy is in $kJ$. For compositions $X_{Fe} < 0.09$ there is minimal dependence on $f_{O_2}$:
+
+$$
+D_{Fe-Mg} = 1.66 \times 10^{-4}exp\left[\frac{-377\pm30}{RT}\right]
+$$
+
+Diffusion parallel to the a-axis is 3.5 times smaller than that parallel to the c-axis. Diffusion parallel to the b-axis is assumed to be the same as the c-axis. Let's get started by loading in some data from @ruth2021petrological:
+
+```{python}
+px_data = pd.read_excel(r".\data\test_data.xlsx", sheet_name="pyroxene")
+px_data.head()
+```
+```{python}
+obs_color = "C7"
+
+fig, ax = plt.subplots(figsize = (4,4))
+ax.plot("x", "Mg_num", data=px_data, c=obs_color)
+ax.set_xlabel(r"Distance ($\mu$m)")
+ax.set_ylabel("Mg #")
+plt.show()
+```
+Now we need to establish some model parameters:
+
+- T
+- $f_{O_2}$
+- crystallographic axis
+
+```{python}
+T_K = 970 + 273.15
+logfo2 = -10.32423762
+fo2 = 10**logfo2
+X_Fe = 0.27
+
+
+D0 = 1.12e-6 * fo2**0.053 * 10 ** (X_Fe - 0.09)
+
+Ea = 308e3
+
+
+def diffusivity(D0, Ea, T):
+    """calculate the diffusion coefficient according to an 
+    arrhenius relationship
+
+
+    Args:
+        D0 (array-like): pre-exponential constant (m^2/s)
+        Ea (array-like): activation energy (J)
+        T (array-like): temperature (K)
+
+    Returns:
+        D (array-like): Diffusion coefficient (m^2/s)
+    """
+
+    R = 8.314  # J/Kmol
+    D = D0 * np.exp(-Ea / (R * T))
+
+    return D
+
+
+Dc = diffusivity(D0, Ea, T_K) * 1e12
+Da = Dc / 3.5
+```
+
+Time to create some initial boundary conditions. For this we will assume a simple step function that assumes melt (and crystal) chemistry changes instantaneous relative to growth. We're going to create a little helper function here that allows us to create an "n" stepped profile by specifying the starting (left), stopping (right) values, and their respective locations:
+
+Define the function:
+```{python}
+def create_stepped_profile(
+    dist, step_start, step_stop, step_left, step_middle, step_right
+):
+    """Create a stepped profile (1D array) where the height, width, 
+    and number of steps are user specified
+
+    Args:
+        dist (array-like): 1D array corresponding to the distance 
+        along the measured profile
+        step_start (list): list of `dist` values where each 
+        step function should start
+        step_stop (list): list of `dist` values where each 
+        step function should stop
+        step_left (list): list of values that correspond to 
+        the concentration on the left
+        side of the step function
+        step_middle (list): list of values that correspond 
+        to the concentration in the middle of
+        the step function
+        step_right (list): list of values that correspond to 
+        the concentration on the right
+        side of the step function
+
+    Returns:
+        stepped_profile : 1D array that has step functions 
+        described by `step_start`,`step_stop`,
+        `step_left`, `step_middle`, `step_right`.
+    """
+
+    stepped_profile = np.zeros(dist.shape[0])
+    step_begin_idxs = []
+    step_end_idxs = []
+
+    dx = dist[1] - dist[0]
+
+    for i in range(len(step_start)):
+        stepstart = step_start[i] - np.min(dist)
+        step_begin = stepstart
+        step_begin_idx = int(step_begin / dx)
+        step_begin_idxs.append(step_begin_idx)
+
+        stepstop = step_stop[i] - np.min(dist)
+        step_end = stepstop
+        step_end_idx = int(step_end / dx)
+        step_end_idxs.append(step_end_idx)
+
+    for i in range(len(step_start)):
+        if i == 0:
+            # first step function
+            stepped_profile[: step_begin_idxs[i]] = step_left[i]
+            stepped_profile[step_begin_idxs[i]
+                : step_end_idxs[i]] = step_middle[i]
+            stepped_profile[step_end_idxs[i]:] = step_right[i]
+        else:
+            # first step function
+            stepped_profile[step_end_idxs[i - 1]
+                : step_begin_idxs[i]] = step_left[i]
+            stepped_profile[step_begin_idxs[i]
+                : step_end_idxs[i]] = step_middle[i]
+            stepped_profile[step_end_idxs[i]:] = step_right[i]
+
+    return stepped_profile
+```
+Use the function:
+```{python}
+
+step_start = [25.87]
+step_stop = [90]
+step_left = [76.06]
+step_middle = [69.47]
+step_right = [69.5]
+
+
+initial_profile = create_stepped_profile(
+    px_data["x"], step_start=step_start, 
+    step_stop=step_stop, step_left=step_left, 
+    step_middle=step_middle, 
+    step_right=step_right)
+
+px_data['initial_profile'] = initial_profile
+
+
+fig, ax = plt.subplots(figsize = (4,4))
+ax.plot("x", "Mg_num", data=px_data, c=obs_color, label='observed')
+ax.plot("x", "initial_profile", data=px_data, c='k', label='initial')
+ax.set_xlabel(r'Distance ($\mu$m)')
+ax.set_ylabel('Mg #')
+ax.legend(loc='upper right')
+plt.show()
+```
+
+Now we create a timegrid. Again, let's create a function because we'll be doing this a lot:
+```{python}
+def get_tgrid(iterations, timestep):
+    """
+    generating a time grid for the diffusion model to iterate over
+
+    Parameters
+    ----------
+    iterations : int
+        The number of total iterations you want the model to be
+    timestep : string
+        how to space the time grid. Options are "hours", "days", 
+        "months", "tenths","years". The time grid will be spaced 
+        by the amount of seconds in the specified unit effectively
+        making a "dt"
+
+    Returns
+    -------
+    t : ndarray
+        time grid that starts at 0, is spaced by the number of 
+        seconds in the specified timestep, and is n-iterations in shape.
+
+    """
+
+    sinyear = 60 * 60 * 24 * 365.25
+    tenthsofyear = sinyear / 10
+    days = sinyear / 365.25
+    months = sinyear / 12
+    hours = sinyear / 8760
+
+    if timestep == "days":
+        step = days
+    elif timestep == "months":
+        step = months
+    elif timestep == "hours":
+        step = hours
+    elif timestep == "tenths":
+        step = tenthsofyear
+    elif timestep == "years":
+        step = sinyear
+    # create a time grid that starts at 0
+    # goes to n iterations and is spaced by
+    # the desired step.
+    t = np.arange(0, iterations * step + 1, step)
+    return t
+```
+And apply the function:
+```{python}
+timegrid = get_tgrid(1e5, "days")  # about 11.5 years spaced by hours
+```
+Now we're ready to forward model diffusion. And again, you guessed it, we're going to create a function. This will be built such that it is able to input generic inputs to be used for any mineral - element combo that follows Fick's 2<sup>nd</sup> Law where the D value is constant:
+
+Define the function:
+```{python}
+def FickFD_constant(x, timegrid, diff_coef, init_prof, left_side="closed"):
+    """
+    Forward model diffusion in minerals according to Fick's 2nd Law with a
+    constant diffusion coefficient
+
+
+    Args:
+        x (array-like): distance profile
+        timegrid (array-like): array of time values to iterate through. Output
+        of get_timegrid()
+        diff_coef (array-like): diffusion coefficient in um^2/s. 
+        init_prof (array-like): profile representing model starting condition
+        left_side (str, optional): left side boundary condition. If 'closed'
+        then the left side is stationary. If 'open' left most point allowed to 
+        diffuse Defaults to 'closed'.
+
+    Raises:
+        Exception: if numerically unstable an error will be thrown
+
+    Returns:
+        curves (array-like): a (timegrid,x) shape array of diffusion curves
+        where each row in the array represents a diffusion curve at a discrete
+        timestep. 
+    """
+
+    ni = x.shape[0]
+    nj = timegrid.shape[0]
+
+    curves = np.empty((nj, ni))
+    curves[0, :] = init_prof.copy()  # initial profile
+
+    dt = timegrid[1] - timegrid[0]
+    dx = x[1] - x[0]  # assume all x points are evenly spaced
+
+    r = (diff_coef * dt) / dx**2  # constant
+
+    if r >= 0.5:
+        raise Exception(
+            "You do not have numerical stability, please adjust your \
+            timegrid accordingly. Remember D * dt / dx**2 must be < 0.5"
+        )
+
+    else:
+
+        for j in range(0, nj - 1):
+            curves[j + 1, 1 : ni - 1] = curves[j, 1 : ni - 1] + r * (
+                curves[j, 0 : ni - 2] - 2 * curves[j, 1 : ni - 1] + curves[j, 2:ni]
+            )
+            if left_side == "closed":
+
+                curves[j + 1, 0] = init_prof[0]  # fix left point
+            elif left_side == "open":
+
+                curves[j + 1, 0] = curves[j, 0] + r * (
+                    curves[j, 1] - 2 * curves[j, 0] + curves[j, 1]
+                )  # let left point diffuse
+
+            else:
+                raise Exception(
+                    "Please choose either 'open' or 'closed' for the \
+                    left side boundary condition"
+                )
+
+            curves[j + 1, -1] = init_prof[-1]  # fix right point
+
+    return curves
+
+```
+Apply the function:
+```{python}
+model_curves = FickFD_constant(
+    x=px_data["x"],
+    timegrid=timegrid,
+    diff_coef=Dc,
+    init_prof=initial_profile,
+    left_side="closed",
+)
+```
+Visualize the results:
+```{python}
+plot_iterations = [
+    10,
+    100,
+    1000,
+    10000,
+]
+fig, ax = plt.subplots(figsize = (4,4))
+ax.plot(px_data["x"], initial_profile, c="k", label="initial")
+for iteration in plot_iterations:
+
+    ax.plot(px_data["x"], model_curves[iteration, :], label=f"iteration {iteration}")
+ax.legend(loc="upper right")
+ax.set_xlabel(r"Distance ($\mu$m)")
+ax.set_ylabel("Concentration")
+plt.show()
+```
+
+Finding the best fit to the observed data can be done by comparing each model curve to the observed data, finding an overall misfit between the two curves, and looking for the minimum misfit. There are a couple metrics to do this by and they'll all probably converge on the same answer, but we'll use the $\chi ^2$, which can be defined as:
+
+$$
+\chi^2_j = \sum_{i=1}^{n_i} \frac{(O_{i,j} - E_{i,j})^2}{E_{i,j}}
+$$
+
+where $O_i$ is a given spot, $i$ in the diffusion model at time $j$, and $E_i$ is the measured data at that point in the distance grid.
+
+Define the function:
+```{python}
+# fitting the model using chi squared
+def fit_model(te, curves, metric="chi"):
+    """
+    Find the best fit timestep for the diffusion model that matches the
+    observed data. Uses a standard chi-squared goodness of fit test.
+
+    Parameters
+    ----------
+    te : ndarray
+        the observed (measured) trace element profile in the plagioclase
+    curves : ndarray
+        array that is t.shape[0] x distance.shape[0] and pertains to a 
+        diffusion curve for each timestep in the model.
+
+    Returns
+    -------
+    bf_time : int
+       the best fit iteration of the model. Can be plotted as follows:
+
+           fig,ax = plt.subplots()
+           ax.plot(dist,curves[bf_time,:])
+
+    """
+    if type(te) == pd.Series:
+        te = np.array(te)
+
+    if metric == "chi":
+
+        # sum chi2 value for all curves
+        chi2 = abs(np.sum((curves - te[None, :]) ** 2 / (te[None, :]), axis=1))
+
+        # find the minimum value
+        chi2_min = np.min(chi2)
+
+        # find where in the array it is (e.g., it's position)
+        fit_idx = np.argwhere(chi2 == chi2_min)
+
+        # Get that array index
+        fit_idx = fit_idx[0].item()
+
+        # add one because python starts counting at 0
+        bf_time = fit_idx + 1
+
+        return bf_time, chi2
+    elif metric == "rmse":
+        rmse = np.sqrt(np.sum((curves - te[None, :]) ** 2, axis=1) / curves.shape[1])
+
+        rmse_min = np.min(rmse)
+
+        fit_idx = np.argwhere(rmse == rmse_min)
+
+        # Get that array index
+        fit_idx = fit_idx[0].item()
+
+        # add one because python starts counting at 0
+        bf_time = fit_idx + 1
+
+        return bf_time, rmse
+```
+Apply the function:
+```{python}
+
+best_fit_rmse, rmse_values = fit_model(px_data["Mg_num"], model_curves, metric="rmse")
+best_fit_chi2, chi2_values = fit_model(px_data["Mg_num"], model_curves, metric="chi")
+
+excel_best_fit = 1602
+px_data[f"best_fit_model"] = model_curves[best_fit_rmse, :]
+
+fig, ax = plt.subplots(figsize = (4,4))
+
+dt = timegrid[1] - timegrid[0]
+
+sec_to_day = 60 * 60 * 24
+
+ax.plot(timegrid / sec_to_day, chi2_values, lw=2, label=r"$\chi ^2$")
+ax.plot(timegrid / sec_to_day, rmse_values, lw=2, label="RMSE")
+ax.set_xscale("log")
+ax.set_yscale("log")
+ax.set_xlabel(
+    "time (days)",
+)
+ax.set_ylabel(
+    "misfit",
+)
+ax.legend(loc="lower left")
+
+plt.show()
+```
+
+Visualize the overall model results:
+```{python}
+bf_color = "C1"
+excel_color = "C8"
+
+fig, ax = plt.subplots(1, 2, figsize=(8, 4))
+ax[0].plot("x", "initial_profile", data=px_data, c="k", label="initial")
+ax[0].plot("x", "Mg_num", data=px_data, label="observed")
+ax[0].plot(
+    "x",
+    "best_fit_model",
+    data=px_data,
+    label=f"best fit: {best_fit_rmse} days",
+    c=bf_color,
+)
+ax[0].plot(
+    px_data["x"],
+    model_curves[excel_best_fit, :],
+    c=excel_color,
+    ls="--",
+    label=f"Excel fit: {excel_best_fit} days",
+)
+ax[0].legend(loc="upper right")
+ax[0].set_xlabel(r"Distance ($\mu$m)")
+ax[0].set_ylabel("Concentration")
+
+dt = timegrid[1] - timegrid[0]
+
+sec_to_day = 60 * 60 * 24
+
+ax[1].plot(
+    timegrid / sec_to_day,
+    chi2_values,
+    "-k",
+    lw=2,
+)
+
+# vertical line at best fit value
+ax[1].axvline(
+    best_fit_chi2,
+    color=bf_color,
+    label=fr"best fit: {best_fit_rmse} days @ {int(T_K - 273.15)}$^{{\circ}}$C",
+),
+ax[1].axvline(
+    excel_best_fit,
+    color=excel_color,
+    ls="--",
+    label=fr"best fit excel: {excel_best_fit} days @ {int(T_K - 273.15)}$^{{\circ}}$C",
+),
+ax[1].set_xlabel(
+    "time (days)",
+)
+ax[1].set_ylabel(
+    r"$\sum{\chi^2} $",
+)
+ax[1].set_xscale("log")
+ax[1].legend(
+    loc="best",
+)
+ax[1].set_yscale("log")
+
+fig.suptitle("1947-2_pyr27_BSE-1")
+plt.show()
+```
+
+### Uncertainties
+
+Quantifying uncertainties in any model is a critical task that helps with their accurate interpretation and diffusion models are no different. The main source of uncertainty in diffusion models are those induced by uncertainties in model temperature and parameters that go into calculating the diffusion coefficient. There are a couple ways to go about this:
+
+- classical error propagation
+- monte carlo estimation
+
+There is also the uncertainty associated with the observed data, itself, but we'll deal with those later.
+
+We'll start with a classical error propagation approach. Suppose variables x, y, z are measured with uncertainties $\sigma _x$, $\sigma_y$, and $\sigma _z$, and used to compute the function $q(x,y,z)$. If uncertainties are independent and random, the uncertainty in $q$ is [@taylor2022error]:
+
+$$
+\sigma _q = \sqrt{{(\frac{\delta q}{\delta x}\sigma_x)}^2 + {(\frac{\delta q}{\delta y}\sigma_y)}^2 + {(\frac{\delta q}{\delta z}\sigma_z)}^2 }
+$$
+
+Applied to the Arrhenius relationship used to calculate diffusion coefficients:
+
+$$
+D = D_0\exp(\frac{-E}{RT})
+$$
+
+The uncertainty in our diffusion coefficient is then:
+
+$$
+\sigma _D = \sqrt{{(\frac{\delta D}{\delta D_0}\sigma _{D_0})}^2 + {(\frac{\delta D}{\delta E}\sigma _E)}^2 + {(\frac{\delta D}{\delta T}\sigma _T)}^2 }
+$$
+
+Skipping some algebra and taking each derivative ultimately yields:
+
+$$
+\sigma _D = \sqrt{{(\exp[\frac{-E}{RT}]\sigma _{D_0})}^2 + {(\frac{-D_0\exp[\frac{-E}{RT}]}{RT}\sigma _E)}^2 + {(\frac{D_0\exp[\frac{-E}{RT}]E}{RT^2}\sigma _T)}^2 }
+$$
+
+With Fe-Mg diffusion rates in orthopyroxene, the uncertainty in D<sub>0</sub> itself is basically due to the uncertainty $f_{O_2}$ measurements:
+
+$$
+D_0 = (10^{X_{Fe}-0.09}) 1.12\times 10^{-6}{f_{O_2}}^{0.053\pm 0.027}
+$$
+
+Following the above general error propagation logic, the uncertainty in this term can then be written as:
+
+$$
+\sigma f_{0_2} = \frac{\delta f_{0_2}}{\delta x}\sigma _x
+$$
+
+Taking this derivative, and adding in the constants for the D<sub>0</sub> term, our uncertainty in the D<sub>0</sub> is then:
+
+$$
+\sigma _{D_0} = 1.12\times 10^{-6}\times 10^{X_{Fe} - 0.09}\ln (f_{O_2}){f_{O_2}}^{0.053} 0.027
+$$
+
+```{python}
+sigma_D0 = 1.12e-6 * 10 ** (X_Fe - 0.09) * (fo2**0.053 * np.log(fo2) * 0.027)
+sigma_Ea = 23e3
+sigma_T = 30
+R = 8.314
+
+d_term = (np.exp(-Ea / (R * T_K)) * sigma_D0) ** 2
+e_term = (-D0 * np.exp(-Ea / (R * T_K)) * sigma_Ea / (R * T_K)) ** 2
+T_term = (D0 * np.exp(-Ea / (R * T_K)) * Ea * sigma_T / (R * T_K**2)) ** 2
+
+sigma_Dc = np.sqrt(d_term + e_term + T_term)
+print(f"D: {Dc/1e12}\nstd dev: {sigma_Dc}")
+```
+
+That was kind of a pain. And a lot of calculus. Fortunately, there is a standard libary included in `scipy` installs: [`uncertainties`](https://pythonhosted.org/uncertainties/index.html). This will allow us to easily propagate our errors and display them. To accomplish the above calculus and computation we can simply redefine some of our variables to include their uncertainties:
+
+
+```{python}
+fo2_exp = ufloat(0.053, 0.027)
+fo2_term = fo2**fo2_exp
+
+D0 = 1.12e-6 * fo2_term * 10 ** (X_Fe - 0.09)
+Ea = ufloat(308e3, 23e3)
+T_K = ufloat(970 + 273.15, 30)
+
+D_new = D0 * unumpy.exp(-Ea / (8.314 * T_K))
+unc_factor = D_new.std_dev / D_new.nominal_value
+print(
+    f"D: {D_new.nominal_value}\nstd dev: {D_new.std_dev}\nrelative std \
+    dev: {int(100 * unc_factor)}%"
+)
+```
+
+Now for the fine print. Our classical approach to error propagation is largely based on linear approximations. What does this _mean_? From the `uncertainties` package documentation:
+
+> The standard deviations and nominal values calculated by this package are thus meaningful approximations as long as uncertainties are “small”. A more precise version of this constraint is that the final calculated functions must have precise linear expansions in the region where the probability distribution of their variables is the largest. Mathematically, this means that the linear terms of the final calculated functions around the nominal values of their variables should be much larger than the remaining higher-order terms over the region of significant probability (because such higher-order contributions are neglected). <br> <br> For example, calculating `x*10` with `x = 5±3` gives a perfect result since the calculated function is linear. So does `umath.atan(umath.tan(x))` for `x = 0±1`, since only the final function counts (not an intermediate function like tan()). <br> <br> Another example is `sin(0+/-0.01)`, for which uncertainties yields a meaningful standard deviation since the sine is quite linear over `0±0.01`. However, `cos(0+/-0.01)`, yields an approximate standard deviation of 0 because it is parabolic around 0 instead of linear; this might not be precise enough for all applications.
+
+A way around this would be to implement a [Monte Carlo](https://en.wikipedia.org/wiki/Monte_Carlo_method) approach. In brief, this will compute the diffusion coefficient many times, but each time the values that contain uncertainties are randomly selected from their probability distribution (mean, standard deviation). This looks something like the following:
+
+```{python}
+n_iterations = 10000
+D_mc = diffusivity(
+    1.12e-6
+    * fo2 ** np.random.normal(fo2_exp.nominal_value, fo2_exp.std_dev, n_iterations)
+    * 10 ** (X_Fe - 0.09),
+    np.random.normal(Ea.nominal_value, Ea.std_dev, n_iterations),
+    np.random.normal(T_K.nominal_value, T_K.std_dev),
+)
+lnD_mc = np.log(D_mc)
+
+fig, ax = plt.subplots(1, 2, figsize=(8, 3))
+
+ax[0].hist(D_mc, bins=50)
+ax[0].set_yscale("log")
+ax[0].set_xlabel("D")
+ax[1].hist(lnD_mc, bins=50)
+ax[1].set_xlabel(r"$\ln{(D)}$")
+for a in ax:
+    mpl_defaults.left_bottom_axes(a)
+
+plt.show()
+```
+
+In looking at the distribution of D values generated from the Monet Carlo simulation, we see that the distribution is highly log-normal. While we _can_ take the standard deviation of this distribution, the reality that ${\sim}$ 68% of values are within 1 standard deviation of the mean only applies to normal distributions. We should therefore try to make our distribution of D values as normal as possible. In this case we can take the natural log of D values (a clue here is that Arrhenius relationships have $\exp$ in the function) to transform them to resemble a normal distribution. Once we have a normal distribution, we can take the mean and standard deviation. It is important to note, however, that these values are in the transformed units!! So what we must then do is back transform those values into "real" values...in this case $\ln(\frac{\mu m^2}{s}) \rightarrow (\frac{\mu m^2}{s})$. We do this by appling the `np.exp` function. 
+
+```{python}
+lnD_mc_mean = np.mean(lnD_mc)
+lnD_mc_std = np.std(lnD_mc)
+
+# back transform into normal units
+D_mc_mean = np.exp(lnD_mc_mean)
+D_mc_lower_bound = np.exp(lnD_mc_mean - lnD_mc_std)
+D_mc_upper_bound = np.exp(lnD_mc_mean + lnD_mc_std)
+
+fig, ax = plt.subplots(1, 2, figsize=(8, 3))
+
+ax[0].hist(D_mc, bins=50)
+ax[0].axvline(D_mc_mean, c="C1")
+ax[0].axvline(D_mc_lower_bound, c="C1", ls="--")
+ax[0].axvline(D_mc_upper_bound, c="C1", ls="--")
+ax[0].set_yscale("log")
+
+
+axins = ax[0].inset_axes(
+    [0.2, 0.6, 0.3, 0.3],
+    xlim=(-1e-19,1.3*D_mc_upper_bound), ylim=ax[0].get_ylim(),
+
+)
+
+
+axins.hist(D_mc,bins = 50,zorder = 0)
+axins.axvline(D_mc_mean, c="C1")
+axins.axvline(D_mc_lower_bound, c="C1", ls="--")
+axins.axvline(D_mc_upper_bound, c="C1", ls="--")
+axins.set_yscale("log")
+ax[0].indicate_inset_zoom(axins, edgecolor="black",zorder = 1)
+axins.set_yticks([])
+axins.set_xticks([D_mc_lower_bound,D_mc_mean,D_mc_upper_bound])
+
+axins.set_xticklabels([f"{val:.2E}" for val in [D_mc_lower_bound,D_mc_mean,D_mc_upper_bound]],rotation = 90,fontsize = 4)
+for spine in ['top','bottom','left','right']:
+    axins.spines[spine].set_linewidth(1)
+
+mpl_defaults.left_bottom_axes(axins)
+
+ax[0].set_xlabel("D")
+
+ax[1].hist(lnD_mc, bins=50)
+ax[1].axvline(lnD_mc_mean, c="C1")
+ax[1].axvline(lnD_mc_mean + lnD_mc_std, c="C1", ls="--")
+ax[1].axvline(lnD_mc_mean - lnD_mc_std, c="C1", ls="--")
+ax[1].set_xlabel(r"$\ln{(D)}$")
+for a in ax:
+    mpl_defaults.left_bottom_axes(a)
+
+
+ax[0].set_title('Back transformed uncertainties on D',fontsize = 12)
+ax[1].set_title(r'$\mu \pm \sigma$ for $\ln{(D)}$',loc = 'center',fontsize = 12)
+
+
+plt.show()
+```
+
+Our uncertainties in "regular" units are asymmetric! This is where classical linear error propagation theory has led us astray. Rather than thinking about our timescales in standard deviations, then, it might be more useful to think about this in confidence limits. We can find lower and upper timescale confidence limits relative to the mean best fit time and then apply it to our model:
+
+```{python}
+# difference of upper bound relative to mean
+upper_conf_limit = abs(D_mc_upper_bound - D_mc_mean) / (D_mc_mean)
+# difference of lower bound relative to mean
+lower_conf_limit = abs(D_mc_lower_bound - D_mc_mean) / D_mc_mean
+
+
+print(f"Your model best fit is {best_fit_rmse:.2E} days")
+print(f"The lower confidence limit is {best_fit_rmse*lower_conf_limit:.2} days")
+print(f"The upper confidence limit is {best_fit_rmse*upper_conf_limit:.2} days")
+```
+Here, we have 68% confidence that the calculated $D$ value is between the upper and lower limits. This is commonly referred to as a confidence interval. A 95% confidence interval would be created by going 2 standard deviations away from the mean in $ln(D)$ space rather than 1 like shown above:
+```python
+lnD_mc_std = np.std(lnD_mc) # 68 % confidence 
+lnD_mc_2std = 2*np.std(lnD_mc) # 95% confidence 
+```
+### Fe-Mg in olivine
+
+Fe-Mg interdiffusion rates ($\frac{m^2}{s}$) in olivine along the c-axis can be explained by the following relationship [@chakraborty2010diffusion]. At $f_{O_2}$ > $10^{-10}$ Pa:
+
+$$
+D = 10^{-9.21}\left[\frac{f_{O_2}}{10^{-7}}\right]^{\frac{1}{6}}10^{3(X_{Fe} - 0.1)}\exp{\left(\frac{-201000 + (P-10^{-5})7\times 10^{-6}}{RT}\right)}
+$$
+
+Where T is in Kelvin, P and $f_{O_2}$ are in Pascals, X<sub>Fe</sub> is the mole fraction of the fayalite component, and R is the gas constant in J/mol$\cdot$K (8.314). Diffusion rates along the a and b axes are 6 times slower than along c. This example lends itself nicely to our tutorial because it introduces an implementation of the solution to the diffusion equation where the diffusion coefficient is dependendent on the composition of the mineral (see above for refresher). Having gone through much of the workflow in the pyroxene demo we are ready to load in some data. This is from Lynn et al., (_in press Bulletin of Volcanology_).
+
+```{python}
+# this is how you load in MATLAB matrices
+from scipy.io import loadmat
+
+# Fo profile
+ol_Fo = loadmat(r".\data\Fo_epma.mat")
+ol_Fo = ol_Fo["Fo_epma"].flatten() / 100
+
+# uncertainty on Fo
+ol_err = loadmat(r".\data\err.mat")
+ol_err = ol_err["err"].flatten() / 100
+
+# CaO data
+ol_cao = loadmat(r".\data\CaO.mat")
+ol_cao = ol_cao["CaO"].flatten()
+
+# initial profile
+ol_Fo_init = loadmat(r".\data\Fo_init.mat")
+ol_Fo_init = ol_Fo_init["Fo_init"].flatten() / 100
+
+# distance profile
+ol_dist = loadmat(r".\data\x.mat")
+ol_dist = np.flip(ol_dist["x"].flatten())
+
+# combine them all into one DataFrame
+ol_data = pd.DataFrame(
+    {"Fo": ol_Fo, "Fo_err": ol_err, "CaO": ol_cao,
+        "Fo_init": ol_Fo_init, "x": ol_dist}
+)
+ol_data.head()
+```
+
+Plot it up!
+
+```{python}
+fig, ax = plt.subplots(2, 1, figsize=(4, 8))
+
+ax[0].errorbar(
+    x="x",
+    y="Fo",
+    yerr="Fo_err",
+    data=ol_data,
+    marker="o",
+    ms=4,
+    ls="",
+    mfc="white",
+    mec="C0",
+    label="observed",
+)
+
+ax[0].plot("x", "Fo_init", data=ol_data, c="black", label="initial")
+ax[0].legend(loc="lower left")
+ax[0].set_ylabel("X$_{Fo}$")
+
+ax[1].plot(
+    "x",
+    "CaO",
+    data=ol_data,
+    marker="o",
+    ls="",
+    ms=4,
+    mfc="white",
+    mec="C1",
+    label="observed",
+)
+ax[1].legend(loc="upper left")
+ax[1].set_ylabel("CaO (wt%)")
+ax[1].set_xlabel(r"Distance ($\mu$m)")
+
+plt.show()
+
+```
+
+Calculate the diffusion coefficient:
+
+Define the function:
+```{python}
+def olivine_diffusivity(X_Fo, pressure, fo2, temperature, species="fe-mg"):
+    """_summary_
+
+    Args:
+        X_Fo (array-like): mol fraction forsterite
+        pressure (scalar): pressure of crystallization in pascals
+        fo2 (scalar): oxygen fugacity of crystallization in pascals
+        temperature (scalar): temperature of crystallization in pascals
+        species (str, optional): diffusing species. Currently only supports 
+        "fe-mg". Defaults to "fe-mg".
+
+    Returns:
+        Dc, Da, Db : Diffusion coefficent for each crystallographic axis. 
+        To find the diffusion coefficient across a given traverse. 
+        If alpha, beta, gamma are the angle of the traverse to the a, b, 
+        and c axis respectively:
+
+        
+        D_traverse = Da*np.cos(np.deg2rad(alpha))**2+ \
+            Db*np.cos(np.deg2rad(beta))**2+ Dc*np.cos(np.deg2rad(gamma))**2
+
+
+    """
+    X_Fe = np.array(1 - X_Fo)
+    if species == "fe-mg":
+
+        Dc = (
+            10**-9.21
+            * (fo2 / 1e-7) ** (1 / 6)
+            * 10 ** (3 * (X_Fe - 0.1))
+            * np.exp(-(201e3 + (pressure - 1e5) * 7e-6) / (8.314 * temperature))
+            * 1e12
+        )
+        Da = Dc / 6
+        Db = Dc / 6
+
+    return Dc, Da, Db
+```
+Apply the function:
+```{python}
+# parameters for diffusion coefficient
+T_K = 1200 + 273.15  # Temperature in K
+fo2 = (10**-8.2) * 10**5  # oxygen fugacity in Pa
+P = 42000000  # pressure in Pa
+
+# crystallographic orientation
+alpha = 17  # in degrees, a axis to traverse angle
+beta = 73  # in degrees, b axis to traverse angle
+gamma = 91  # in degrees, c axis to traverse angle
+
+
+
+Dc, Da, Db = olivine_diffusivity(
+    X_Fo=ol_data["Fo"].values, pressure=P, fo2=fo2, temperature=T_K
+)
+D_traverse = (
+    Da * np.cos(np.deg2rad(alpha)) ** 2
+    + Db * np.cos(np.deg2rad(beta)) ** 2
+    + Dc * np.cos(np.deg2rad(gamma)) ** 2
+)
+```
+
+Apply the compositionally dependent D value solution to our timegrid:
+
+Define the function:
+```{python}
+def FickFD_comp_dependent(
+    x,
+    timegrid,
+    init_prof,
+    pressure,
+    fo2,
+    temperature,
+    alpha,
+    beta,
+    gamma,
+    left_side="closed",
+    right_side="closed",
+):
+    """
+    Forward model diffusion for olivine according to Fick's 2nd Law with a
+    diffusion coefficient that is dependent on composition. Because the diffusion
+    coefficient needs to be calculated at each iteration, this will calculate the 
+    diffusion coefficient for you based off the fo2, temperature, and transect 
+    orientation relative to the a, b, and c axes. 
+
+
+    Args:
+        x (array-like): distance profile
+        timegrid (array-like): array of time values to iterate through. Output
+        of get_timegrid()
+        init_prof (array-like): profile representing model starting condition
+        pressure (scalar): _description_
+        fo2 (scalar): oxygen fugacity in pascals
+        temperature (scalar): temperature in Kelvin
+        alpha (scalar): angle to a-axis in degrees
+        beta (scalar): angle to b-axis in degrees
+        gamma (scalar): angle to c-axis in degrees
+        left_side (str, optional): left side boundary condition. If 'closed'
+        then the left side is stationary. If 'open' left most point allowed to 
+        diffuse Defaults to 'closed'.
+        right_side (str, optional): right side boundary condition. If 'closed'
+        then the right side is stationary. If 'open' right most point allowed to 
+        diffuse Defaults to 'closed'.
+
+    Raises:
+        Exception: error for not being numerically stable
+        Exception: error for not specifying boundary conditions correctly
+
+    Returns:
+        curves (array-like): a (timegrid,x) shape array of diffusion curves
+        where each row in the array represents a diffusion curve at a discrete
+        timestep. 
+    """
+
+    ni = x.shape[0]
+    nj = timegrid.shape[0]
+    if np.any(init_prof > 1):
+        init_prof = init_prof / 100
+
+    curves = np.empty((nj, ni))
+    curves[0, :] = init_prof.copy()  # initial profile
+
+    dt = timegrid[1] - timegrid[0]
+    dx = x[1] - x[0]  # assume all x points are evenly spaced
+
+    Dc, Da, Db = olivine_diffusivity(
+        X_Fo=init_prof, pressure=pressure, fo2=fo2, temperature=temperature
+    )
+
+    r = (Dc * dt) / dx**2  # constant
+
+    if np.any(r >= 0.5):
+        raise Exception(
+            "You do not have numerical stability, please adjust your timegrid \
+            accordingly. Remember D * dt / dx**2 must be < 0.5"
+        )
+
+    else:
+
+        for j in range(0, nj - 1):
+
+            Dc, Da, Db = olivine_diffusivity(
+                X_Fo=curves[j, :], pressure=pressure, fo2=fo2, temperature=temperature
+            )
+            D = (
+                Da * np.cos(np.deg2rad(alpha)) ** 2
+                + Db * np.cos(np.deg2rad(beta)) ** 2
+                + Dc * np.cos(np.deg2rad(gamma)) ** 2
+            )
+
+            # D = diff_coef*10**(3*(0.9-curves[j,:])) #adjust D for composition
+
+            curves[j + 1, 1 : ni - 1] = (
+                curves[j, 1 : ni - 1]
+                + dt
+                / dx**2
+                * ((D[2:ni] - D[1 : ni - 1]))
+                * ((curves[j, 2:ni] - curves[j, 1 : ni - 1]))
+                + D[1 : ni - 1]
+                * dt
+                * (
+                    (curves[j, 2:ni] - 2 * curves[j, 1 : ni - 1] + curves[j, : ni - 2])
+                    / dx**2
+                )
+            )
+
+            if left_side == "closed":
+
+                curves[j + 1, 0] = init_prof[0]  # fix left point
+
+            elif left_side == "open":
+                curves[j + 1, 0] = (
+                    curves[j, 0]
+                    + dt / dx**2 * ((D[1] - D[0])) * ((curves[j, 1] - curves[j, 0]))
+                    + D[0]
+                    * dt
+                    * ((curves[j, 1] - 2 * curves[j, 0] + curves[j, 1]) / dx**2)
+                )
+
+            if right_side == "closed":
+
+                curves[j + 1, -1] = init_prof[-1]  # fix left point
+
+            elif right_side == "open":
+
+                curves[j + 1, -1] = (
+                    curves[j, -1]
+                    + dt / dx**2 * ((D[-2] - D[-1])) * ((curves[j, -2] - curves[j, -1]))
+                    + D[-1]
+                    * dt
+                    * ((curves[j, -2] - 2 * curves[j, -1] + curves[j, -2]) / dx**2)
+                )
+
+            else:
+                raise Exception(
+                    "Please choose either 'open' or 'closed' for the left \
+                    side boundary condition"
+                )
+
+    return curves
+```
+
+Apply the function:
+```{python}
+# time grid
+tgrid = get_tgrid(1e4, "hours")
+
+
+# compositional dependent D solution
+changing_model_curves = FickFD_comp_dependent(
+    x=ol_data["x"].values,
+    timegrid=tgrid,
+    init_prof=ol_data["Fo_init"].values,
+    pressure=P,
+    fo2=fo2,
+    temperature=T_K,
+    alpha=alpha,
+    beta=beta,
+    gamma=gamma,
+    left_side="closed",
+    right_side="closed",
+)
+```
+
+Find the best fit iteration:
+```{python}
+best_fit_rmse, rmse_values = fit_model(
+    ol_data["Fo"], changing_model_curves, metric="rmse"
+)
+```
+
+Visualize the results:
+```{python}
+hours2yrs = 24 * 365.25
+hours2days = 24
+sinday = 60*60*24
+sinyr = hours2yrs * 60 * 60
+fig, ax = plt.subplots(1, 2, figsize=(8, 4), layout="constrained")
+
+
+ax[0].errorbar(
+    x="x",
+    y="Fo",
+    yerr="Fo_err",
+    data=ol_data,
+    marker="o",
+    ms=4,
+    ls="",
+    mfc="white",
+    mec="C0",
+    label="observed",
+)
+
+
+ax[0].plot(
+    ol_data["x"],
+    changing_model_curves[best_fit_rmse, :],
+    label=f"best fit: {np.round(best_fit_rmse/hours2days,2)} days",
+)
+
+ax[0].plot("x", "Fo_init", data=ol_data, c="black", label='initial')
+
+
+ax[0].legend(loc="lower left")
+
+ax[0].set_ylabel("X$_{Fo}$", fontsize=20)
+ax[0].set_xlabel(r"Distance ($\mu$m)", fontsize=20)
+
+
+ax[1].plot(tgrid / sinday, rmse_values, "k-")
+ax[1].axvline(
+    tgrid[best_fit_rmse] / sinday,
+    c="C1",
+    lw=2,
+    label=f"best fit: {np.round(best_fit_rmse/hours2days,2)} days",
+)
+ax[1].legend(loc="lower right")
+ax[1].set_xlabel("model time (days)", fontsize=20)
+ax[1].set_ylabel("RMSE", fontsize=20)
+
+ax[0].set_title(
+    fr"T: {int(T_K - 273.15)} $^{{\circ}}$C ", loc="left", fontstyle="italic"
+)
+
+plt.show()
+```
+
+### Sr in plagioclase
+
+Sr and Mg flux in plagioclase is a result of two things:
+
+- diffusion in response to its own gradient
+- diffusion in response to gradients in $X_{An}$. 
+
+This warrants a special solution to the diffusion equation. A detailed explanation of this can be found in @costa2003diffusion and is expanded on by @dohmen2017chronometry and the Appendix of @lubbers2024constraining. A synopsis:
+
+<center> Remember Fick's 1<sup>st</sup> Law: </center>
+
+$$
+J = -D\frac{\delta C}{\delta x}
+$$
+
+<center>And Fick's 2<sup>nd</sup> Law: </center>
+
+$$ 
+\frac{\delta C}{\delta t} = D\frac{\delta ^2C}{\delta x^2}
+$$
+
+<center> Combining these we get: </center>
+
+$$
+\frac{\delta C}{\delta t} = \frac{\delta }{\delta x}(-J)
+$$
+<center>Since for plagioclase:</center>
+
+$$ 
+J = -D_{Sr}\frac{\delta C_{Sr}}{\delta x} + \frac{D_{Sr}C_{Sr}}{RT}A_{Sr}\frac{\delta X_{An}}{\delta x} 
+$$
+The final solution to describe how trace elements diffuse in plagioclase with time is:
+
+$$ 
+\frac{\delta C}{\delta t} = \frac{\delta}{\delta x}\left[ D_{Sr}\frac{\delta C_{Sr}}{\delta x} - \frac{D_{Sr}C_{Sr}}{RT}A_{Sr}\frac{\delta X_{An}}{\delta x}\right]
+$$
+
+To help ensure a more stable solution, @dohmen2017chronometry employ another half-space in the $x$ direction: 
+
+$$ 
+D(x_{i+0.5}) \frac{\delta C}{\delta x}(x_{i+0.5}) \approx D_{i+0.5}\frac{C_{i+1}-C_i}{\Delta x}
+$$
+
+Applying this to the above solution we can then describe how the concentration of Sr in plagioclase evolves with respect to space ($i$) and time ($j$):
+
+:::{.callout-tip icon=false title="Final Solution"}
+$$\tiny{
+C_{i,j+1} = \frac{\Delta t}{\Delta x^2}\left[C_{i+1,j}\left( D_{i+0.5,j} -  \frac{D_{i+0.5,j}\Theta}{2}(An_{i+1} - An_i) \right) - C_{i,j}\left(D_{i+0.5,j} + D_{i-0.5,j} +  \frac{D_{i+0.5,j}\Theta}{2}(An_{i+1} - An_i) -  \frac{D_{i-0.5,j}\Theta}{2}(An_{i} - An_{i-1}) \right)  +C_{i-1,j}\left( D_{i-0.5,j} -  \frac{D_{i-0.5,j}\Theta}{2}(An_{i} - An_{i-1}) \right)  \right]}
+$$
+:::
+where:
+$$
+\Theta = \frac{A}{RT}
+$$
+
+Here $A$ comes from the relationship that describes how the activity coefficient ($\gamma$) changes with $X_{An}$ from @dohmen2014predictive:
+$$\
+-RTln({\gamma}) = AX_{An} + B
+$$
+
+Critically, because Sr diffuses significantly faster than the chemical exchange of anorthite and albite, it will equilibrate sufficiently fast such that the An profile can considered stationary. Because the flux of Sr in plagioclase, as shown above, is controlled in part by the An content, the quasi-equilibrium state (i.e., equilibrium state for a given An content) will be heterogeneous. For Sr, that has an activity coefficient that increases with An content, the quasi-equilibrium state will be inversely correlated with An content @dohmen2017chronometry. 
+
+As crystals are open to chemical exchange with the surrounding melt [e.g., infinite reservoir assumption; @crank1979mathematics], the chemical potential of Sr is fixed at the rim. With the understanding that it is not actually the concentration gradient that drives diffusion, but the chemical potential gradient, when the chemical potential at any point in our transect matches that of the rim, we can say we have reached a quasi-equilibrium situation for that An distribution. Formally this can be thought of as $\frac{\delta C}{\delta t} = 0$ and $J_i(x) = J_s = 0$. With respect to our Sr profile, this is explained by:
+$$
+{C_{Sr}^{eq}}(x) = {C_{Sr}^{0}}\exp{\left[\frac{A_{Sr}}{RT}X_{An}(x)\right]}
+$$
+<center>Where</center>
+
+$$
+{C_{Sr}^{0}} = {C_{Sr}^{rim}}\exp{\left[\frac{-A_{Sr}}{RT}{X_{An}^{rim}}\right]}
+$$
+
+
+Below we'll walk through how to implement the above maths. It relies heavily on the small module [`plag_diff`](https://github.com/jlubbersgeo/diffusion_chronometry/blob/main/plag_diff.py). I strongly consider looking this over and getting familiar with it! It requires two additional packages:
+
+- [mendeleev](https://mendeleev.readthedocs.io/en/stable/): For working with elemental data (e.g., atmomic masses, atomic numbers)
+- [statsmodels](https://www.statsmodels.org/stable/index.html): implementation of statistical models in python. In our case regressions.
+- [tqdm](https://tqdm.github.io/): displaying progress bars in python
+
+```{python}
+import plag_diff as plag
+from tqdm.notebook import tqdm
+```
+Just like any function in python, `plag_diff` functions can be utilized with the `help()` function to find out more information:
+```{python}
+help(plag.dohmen_kd_calc)
+```
+
+We'll begin by importing some data from @lubbers2024constraining and plotting it up.
+
+```{python}
+data = pd.read_excel(r".\data\test_data.xlsx",
+                     sheet_name="plagioclase").set_index('grain')
+
+# specify which grain to use
+grain = "MQ3"
+
+# specify which element to model
+element = "Sr"
+
+resolution = 5.0  # um
+
+# for consistent colors throughout
+obs_color = "#000000"  # observed data
+# equilibrium data
+dohmen_color = "#FF1F5B"
+an_color = "#0D4A70"
+init_color = "#A0B1BA"  # initial profile related data
+bf_color = "#00CD6C"
+
+
+# the domain you wish to model diffusion over
+# try to keep this untouched but if there are
+# erroneous ends on your data this will clip them
+start = 0
+stop = 0
+
+
+# unclipped data for a grain
+# distance
+dist_all = np.arange(0, data.loc[grain, :].shape[0]) * resolution
+# measured trace element information
+te_all = data.loc[grain, element].to_numpy()
+te_unc_all = data.loc[grain, "{}_se".format(element)].to_numpy()
+# anorthite
+an_all = data.loc[grain, "An"].to_numpy()
+if np.unique(an_all > 1)[0] == True:
+    an_all = an_all / 100
+# clipped data. If above start and stop are 0 they
+# will be the same as the unclipped data. This is fine.
+te = te_all[start: len(te_all) - stop]
+te_unc = te_unc_all[start: len(te_all) - stop]
+dist = dist_all[start: len(te_all) - stop]
+an = an_all[start: len(te_all) - stop]
+
+
+# plot observed data
+fig, ax = plt.subplots(figsize=(4, 4))
+# observed profile and subset
+l1, = ax.plot(
+    dist,
+    te,
+    c=obs_color,
+    marker="o",
+    mfc="w",
+    mec=obs_color,
+    ms=5,
+    mew=0.75,
+    label=element,
+)
+ax.fill_between(dist, te + te_unc, te - te_unc, fc=obs_color, alpha=0.2)
+
+ax2 = ax.twinx()
+l2, = ax2.plot(
+    dist,
+    an,
+    c=an_color,
+    marker="",
+    mfc="w",
+    mec=an_color,
+    ms=5,
+    mew=0.75,
+    ls='--',
+    label="anorthite",
+)
+ax2.tick_params(axis="y", which="both", colors=an_color)
+ax2.set_ylabel("X$_{An}$", c=an_color)
+
+ax.legend(handles=[l1, l2], fancybox=True, shadow=True)
+# fig.legend(loc="best")
+
+ax.set_ylabel("{} [ppm]".format(element), c=obs_color)
+ax.tick_params(axis="y", which="both", colors=obs_color)
+ax.set_xlabel("Distance ($\mu$m)")
+
+ax.text(0, 1.03, 'Core', fontsize=20, transform=ax.transAxes)
+ax.text(0.8, 1.03, 'Rim', fontsize=20, transform=ax.transAxes)
+plt.show()
+```
+
+We then calculate the quasi-equilibrium profile. Later on we will show that no matter how long we run our diffusion model for, the Sr profile will not deviate from the quasi equilibrium situation even though we may be at magmatic temperatures. Below we show:
+
+- Left: our observed Sr profile with respect to the quasi equilibrium profile
+- Right: our observed Sr vs X<sub>An</sub> data with respect to the quasi equilibrium Sr vs X<sub>An</sub> data. 
+  
+We also plot a curve (black dashed line) for the equilibrium trace element partitioning at our specified temperature and melt composition.
+
+```{python}
+T = 750 #celsius
+T_K = T + 273.15 #kelvin
+R = 8.314 #J/molK
+sio2_melt = 72 #wt%
+
+RTlngamma, gamma, slope, intercept, stats = plag.dohmen_activity_calc(
+    element, an, T, return_regression_stats=True
+)
+
+kd, rtlnk, A, B = plag.plag_kd_calc(
+        element, an, T, method="Dohmen", sio2_melt=sio2_melt)
+
+# range of anorthite compositions to calculate equilibrium curves
+an_partition = np.linspace(0, 1,101)
+
+# Calculated Mg equilibrium
+kd_eq, rtlnk_eq, A_eq, B_eq = plag.plag_kd_calc(
+    element, an_partition, T, method="Dohmen", sio2_melt=sio2_melt
+)
+
+
+c0 = te[-1] * np.exp(-slope*1000/(R*T_K)*an[-1])
+eq_prof = c0 * np.exp(slope*1000/(R*T_K)*an)
+
+Eq_solid_ave = te[-1] / kd[-1] * kd_eq
+
+
+
+fig,ax = plt.subplots(1,2,figsize = (8,4),layout = 'constrained')
+
+ax[0].plot(
+    dist,
+    te,
+    c=obs_color,
+    marker="o",
+    mfc="w",
+    mec=obs_color,
+    ms=5,
+    mew=0.75,
+    label=f"{element} observed",
+)
+ax[0].fill_between(dist, te + te_unc, te - te_unc, fc = obs_color, alpha=0.2)
+ax[0].plot(dist,eq_prof,lw = 2, color = dohmen_color, label = 'quasi equilibrium')
+ax[0].legend(loc = 'best')
+
+ax[1].plot(an_partition, Eq_solid_ave, color='k', ls = '--', zorder = 0, label = 'eq. partitioning')
+ax[1].plot(an,eq_prof,marker = 'o',ls = '',mfc = 'none',mec = dohmen_color,label = 'quasi equilibrium',zorder = 0)
+s = ax[1].scatter(an, te, c=dist, ec='k', lw=0.75,label = f'{element} observed')
+fig.colorbar(s, ax=ax[1], label='distance ($\mu$m)')
+ax[1].legend(loc = 'upper right')
+
+
+ax[0].set_ylabel(f"{element} [ppm]")
+ax[0].set_xlabel('Distance ($\mu$m)')
+ax[1].set_xlabel('X$_{An}$')
+plt.show()
+```
+
+Next, we must determine the initial profile. This is probably one of the aspects of plagioclase diffusion modeling that introduces the most uncertainty. The basic premise of this is:
+
+1. calculate a "melt equivalent" profile that based on the observed data. This is simply $C_l = \frac{C_s}{K_d}$ and represents the effective melt composition in equilibrium with the observed data. We make the assumption that some diffusion has occured between crystallization and eruption, and therefore this melt equivalent profile does NOT represent the melt composition at the time of crystallization. 
+2. To approximate the melt composition at the time of plagioclase formation we take "melt equivalent" profile and simplify it back to a series of two or three discrete compositions that are based off changes in the An profile. Becuase the An component in plagioclase can effectively be treated as stationary in this scenario, it offers a good opportunity to view where changes in melt composition are happening. We then back calculate that simplified melt profile into plagioclase compositions that's in equilibrium with it to get our initial profile. An overall caveat of this methodology is that it necessitates that not much diffusion has occurred. If significant diffusion has occurred, creating simplified melt profiles off the observed data will not yield a melt profile that reflects the initial melt evolution during crystallization. We however, don't believe this is the case for our grains, due to the observed positive relationships between Sr and An. In brief, because Sr is compatible in plagioclase, this observed positive relationship generally means that little to no diffusive re-equilibration has occured in plagioclase [e.g., @cooper2014rapid]. Further evidence to suggest that a positive correlation between Sr and X<sub>An</sub> reflects minimal diffusive equilibration is that the quasi equilibrium profile calculated above has a strong negative correlation and as diffusion progresses in the grain from initial profile to quasi equilibrium (shown later) this relationship goes from positive to negative.
+
+
+In the case where one is trying to model diffusion for a profile where it is assumed that the profile is close to quasi-equilibrium another method of estimating the initial profile would have to be used (e.g., creating a melt equivalent profile that mimics the shape and magnitude of the An profile changes, creating an initial profile that is effictively a "mirror" to the calculated equilibrium profile). More than any other assumption (and this goes for any study that forward models diffusion in plagioclase) the initial profile is probably the one that introduces the most uncertainty and we realize this, however, based on past reviewer comments in previous manuscripts, it was decided this was a sufficient way to go about it as creating an initial profile that is a simplified version of the observed plagioclase proflie (i.e., creating a solid profile step function) implicitly creates the situation whereby the melt profile would be extremely variable to keep the Sr profile the simplified shape. We do not believe we have the petrologic evidence to create such a melt profile and take an Occam's Razor approach in this case: a minimum number of input melt compositions is better.
+
+```{python}
+melt_equivalent = te / kd
+
+simple_liquid = plag.create_stepped_profile(
+    dist,
+    step_start=[20],
+    step_stop=[90],
+    step_left=[105],
+    step_middle=[98],
+    step_right=[145],
+)
+
+initial_profile = simple_liquid * kd
+
+fig, ax = plt.subplots(1, 3, figsize=(9, 3), layout='constrained')
+
+ax[0].plot(dist, an, c=an_color, label='X$_{An}$')
+ax[0].set_ylabel('X$_{An}$')
+
+ax[1].plot(dist, melt_equivalent, color=obs_color,
+           label='obs. melt equivalent')
+ax[1].plot(dist, simple_liquid, color=init_color,
+           ls="-.", lw=2, label="simple melt equivalent")
+ax[1].legend(loc='upper left')
+
+ax[2].plot(
+    dist,
+    te,
+    c=obs_color,
+    marker="o",
+    mfc="w",
+    mec=obs_color,
+    ms=5,
+    mew=0.75,
+    label=f"{element} observed",
+)
+ax[2].fill_between(dist, te + te_unc, te - te_unc, fc=obs_color, alpha=0.2)
+ax[2].plot(dist, eq_prof, lw=2, color=dohmen_color, label='quasi equilibrium')
+ax[2].plot(dist, initial_profile, color=init_color,
+           ls="-.", lw=2, label="initial condition")
+ax[2].legend(loc='best')
+
+ax[1].set_ylabel(f"{element} [ppm]")
+ax[2].set_ylabel(f"{element} [ppm]")
+
+fig.supxlabel('Distance ($\mu$m)')
+plt.show()
+```
+
+Now that we have our quasi-equilibrium profile calculated, it is time to create our timegrid, calculate the diffusion coefficient, and implement the special halfspace solution to the diffusion equation outlined above. In `plag_diff` this is easily done by:
+```{python}
+iterations = int(1 * 1e5)
+timestep = "tenths" #iterate every tenth of a year
+
+
+# creating a time grid that is spaced by years
+t = plag.get_tgrid(iterations, timestep)
+
+#diffusion coefficient for every point in the profile
+D = plag.plag_diffusivity(element, an, T_K)
+
+# call the function that does the modeling ove the above numerical
+# solution
+curves, best_fit_iteration, chi2_array = plag.diffuse_forward_halfspace(
+        initial_profile=initial_profile,
+        observed_profile=te,
+        timegrid=t,
+        diffusivity_profile=D,
+        an_profile=an,
+        slope=slope,
+        distance_profile=dist,
+        temp=T,
+        boundary="infinite observed",
+        local_minima=True,
+    )
+```
+
+Visualize the results:
+```{python}
+#conversion factor to turn iterations to years
+makeyears = 10
+
+fig,ax = plt.subplots(1,2,figsize = (8,4),layout = 'constrained')
+compare = [makeyears * 1e2, makeyears * 1e3, makeyears * 1e4,]
+compare_colors = ["C3", "C4", "C5"]
+
+
+ax[0].plot(dist, initial_profile, c = init_color, lw=2, label="initial profile")
+ax[0].plot(
+    dist,
+    te,
+    label="observed",
+    c=obs_color,
+    marker="o",
+    mfc="w",
+    mec=obs_color,
+    mew=0.75,
+)
+ax[0].fill_between(dist, te + te_unc, te - te_unc,fc = obs_color, alpha=0.2)
+ax[0].plot(
+    dist, eq_prof, c=dohmen_color, lw=2, ls = '--', label="Equilibrium",)  # boundary conditions
+
+for i in range(0, len(compare)):
+    ax[0].plot(
+        dist,
+        curves[int(compare[i])],
+        label="t = {:.2E} yrs".format(compare[i] / makeyears),
+        lw=0.75,
+        color=compare_colors[i],
+    )
+    
+
+
+ax[0].plot(dist, curves[best_fit_iteration], "-", c=bf_color,
+           mec="k", lw=3, label="best fit")
+h, l = ax[0].get_legend_handles_labels()
+fig.legend(h, l, loc="upper left", ncol=len(h)//2, bbox_to_anchor=(0.1, 1.2))
+
+
+# chi-squared plot
+# convert to days
+tdays = t / (t[1] - t[0])
+x_data = tdays / makeyears
+ax[1].plot(
+    x_data,
+    chi2_array,
+    "-k",
+    lw=2,
+)
+# vertical line at best fit value
+ax[1].axvline(
+    best_fit_iteration / makeyears,
+    color=bf_color,
+    label="t = {} yrs".format(np.round(best_fit_iteration / makeyears, 2)),
+    lw=1,
+    ls="--",
+)
+ax[1].plot(x_data[best_fit_iteration], chi2_array[best_fit_iteration], mfc="w",
+        marker="o", ls="", mec=bf_color, mew=1)
+ax[1].set_xlabel("time (yrs)", fontsize=16)
+ax[1].set_ylabel("$\sum{\chi^2} $", fontsize=16)
+ax[1].set_xscale("log")
+ax[1].legend(loc="lower left", title="Best Fit", prop={"size": 10})
+ax[1].set_yscale("log")
+ax[1].set_xlabel("Time (yrs)")
+plt.show()
+```
+
+Next we'll deal with model uncertainties. Here we will randomly vary two things for 1000 iterations to see their impact on our diffusion model:
+
+1. Temperature: this then changes our A value and diffusion coefficient
+2. Our analytical profile: This reflects uncertainty in our analyses and how it impacts the diffusion model
+
+For each iteration we will find a best fit diffusion model to the random analytical profile and save it. We'll then get statistics on this distribution and visualize it. 
+
+While technically a change in temperature would change our melt equivalent profile and possibly then our choice of initial profile, this would require a manual choosing of initial condition each iteration of the monte carlo, rendering this sort of exercise not possible. So...for this exercise we leave it the same during each iteration.
+
+The `plag.diffuse_forward_halfspace` function is set up to minimize computation time by being vectorized, however the default is to have the `local_minima` argument set to `True`. This forces it to search over the entire timegrid space and calculate a model curve for each value in the timegrid. While quite quick for 1 diffusion model, when we are trying to do 1000 of them, this can unecessarily increase computation time, especially if the best fit is near the front end of the timegrid. By setting `local_minima = False` the model runs and checks the misfit each iteration. If the misfit is less than the previous iteration the model continues calculating diffusion curves. If the misfit for the current iteration is larger than the previous iteration it stops and marks that as the best fit time. Because we have confirmed above that there are no local minima in our chi-squared vs. time plot, this methodology is safe. Still...This is when you may want to go get a cup of coffee. 1000 iterations can take anywhere from 1-10 minutes. Here we only do 100 to save time in the example. 
+
+```{python}
+best_fits = []
+iterations = 100  # for example purposes
+
+for i in tqdm(range(iterations)):
+    T = np.random.normal(750, 20)
+    RTlngamma, gamma, slope, intercept, stats = plag.dohmen_activity_calc(
+        element, an, T, return_regression_stats=True
+    )
+
+    c, b, c2 = plag.diffuse_forward_halfspace(
+        initial_profile=initial_profile,
+        observed_profile=plag.random_profile(te, te_unc),
+        timegrid=t,
+        diffusivity_profile=plag.plag_diffusivity(
+            element=element, an=an, T_K=T + 273.15
+        ),
+        an_profile=an,
+        slope=slope,
+        distance_profile=dist,
+        temp=T,
+        boundary="infinite observed",
+        local_minima=False,
+    )
+    best_fits.append(b)
+
+best_fits = np.array(best_fits)
+```
+
+Finally, we visualize the results of the Monte Carlo simulation and make a summary figure that puts it all together. 
+
+```{python}
+fig, ax = plt.subplot_mosaic(
+    [["prof", "an_prof"], ["prof", "hist"]],
+    layout="constrained",
+    height_ratios=[2, 1],
+    width_ratios=[3, 2],
+    figsize=(8, 4),
+)
+fs = 10
+ms = 5
+
+ax["prof"].plot(dist, initial_profile, init_color, lw=2, label="initial profile")
+ax["prof"].plot(
+    dist,
+    te,
+    label="observed",
+    c=obs_color,
+    ls="",
+    marker="o",
+    mfc="w",
+    mec=obs_color,
+    mew=0.75,
+    ms=ms,
+)
+ax["prof"].fill_between(dist, te + te_unc, te - te_unc, alpha=0.2)
+ax["prof"].plot(
+    dist, curves[best_fit_iteration], "-", c=bf_color, mec="k", lw=3, label="best fit"
+)
+
+ax["prof"].plot(
+    dist, eq_prof, c=dohmen_color, lw=2, label="DB14 quasi eq."
+)  # boundary conditions
+
+
+ax["prof"].set_xlabel("Distance ($\mu$m)", fontsize=16)
+ax["prof"].set_ylabel(f"{element} [ppm]", fontsize=16)
+
+
+fig.legend(loc="upper left", ncol=4, bbox_to_anchor=(0.1, 1.1))
+
+ax["an_prof"].plot(dist, an, "k-", linewidth=1.5)
+ax["an_prof"].set_ylabel("X$_{An}$", fontsize=16)
+ax["an_prof"].set_xlabel("Distance ($\mu$m)", fontsize=12)
+
+ax["hist"].hist(
+    best_fits / makeyears,
+    facecolor="whitesmoke",
+    edgecolor="k",
+    linestyle="--",
+)
+ax["hist"].plot(
+    best_fits.mean() / makeyears,
+    0,
+    marker="o",
+    mec="darkgreen",
+    mfc=bf_color,
+    mew=1.5,
+    clip_on=False,
+    zorder=10,
+)
+# mpl_defaults.left_bottom_axes(ax["hist"])
+ax["hist"].set_xlabel("best fit time (yrs)", fontsize=12)
+ax["hist"].set_ylabel("counts", fontsize=12)
+
+transform = "log"
+
+if transform:
+    (
+        transform_mc_results,
+        transform_mean,
+        transform_median,
+        transform_low,
+        transform_high,
+    ) = plag.transform_data(best_fits / makeyears, kind=transform)
+
+    ax["prof"].text(
+        0.05,
+        1.03,
+        "$t_{{mean}}$ = {} yrs".format(np.round(transform_mean, 2)),
+        transform=ax["prof"].transAxes,
+        fontsize=fs,
+    )
+    ax["prof"].text(
+        0.55,
+        1.03,
+        "$t_{{95}} = \pm$ {} ; {}".format(
+            np.round(transform_mean - transform_low, 2),
+            np.round(transform_high - transform_mean, 2),
+        ),
+        transform=ax["prof"].transAxes,
+        fontsize=fs,
+    )
+else:
+    ax["prof"].text(
+        0.05,
+        1.03,
+        "$t_{{mean}}$ = {} yrs".format(np.round(best_fits.mean(), 2)),
+        transform=ax["prof"].transAxes,
+        fontsize=10,
+    )
+    ax["prof"].text(
+        0.55,
+        1.03,
+        "$t_{{95}} = \pm$ {}".format(np.round(2 * np.std(best_fits), 2)),
+        transform=ax["prof"].transAxes,
+        fontsize=10,
+    )
+plt.show()
+```
+
+## References
+
+::: {#refs}
+:::
