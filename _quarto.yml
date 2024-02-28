@@ -1,3 +1,24 @@
 project:
   type: website
   output-dir: docs
+format:
+  theme: 
+    toc: true
+    code-fold: true
+    code-summary: "Show the code"
+    code-overflow: scroll
+    code-block-border-left: "#007150"
+    code-block-background: true
+    code-line-numbers: true
+    code-copy: hover
+    code-tools: true
+    highlight-style: breeze
+    standalone: true
+    warning: false
+    freeze: true
+    embed-resources: true
+    page-layout: full
+    theme: 
+        light: [sandstone, theme_html_light.scss]
+        dark: [slate, theme_html_dark.scss]
+    bibliography: bibliography.bib
