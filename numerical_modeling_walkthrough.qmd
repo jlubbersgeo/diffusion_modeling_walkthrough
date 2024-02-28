@@ -33,20 +33,6 @@ format:
     bibliography: bibliography.bib
 
 
-#   pdf:
-#     mainfont: CMU Sans Serif
-#     toc: true
-#     toc-title: Contents
-#     number-sections: false
-#     dpi: 600
-#     code-line-numbers: true
-#     highlight-style: tango
-#     geometry:
-#       - left=10mm
-#       - right=10mm
-#     fig-align: center
-#     warning: false
-
 
 ---
 
@@ -64,7 +50,7 @@ Before we get started some background reading/resources:
 
 ## Creating our Python virtual environment
 
-To work on this notebook we will operate in a python [virtual environment](https://realpython.com/python-virtual-environments-a-primer/). You can think of this as a _containerized_ way of running specific versions of python and various libraries. This is useful for sharing code that you need to be reproducible in the long-term (e.g., research results). To set it up, we'll use [Anaconda](https://www.anaconda.com/download), terminal window, and an `environment.yml` file. This will install all the requisite libraries and version of python.
+To work on this notebook we will operate in a python [virtual environment](https://realpython.com/python-virtual-environments-a-primer/). You can think of this as a _containerized_ way of running specific versions of python and various libraries. This is useful for sharing code that you need to be reproducible in the long-term (e.g., research results). To set it up, we'll use [Anaconda](https://www.anaconda.com/download), terminal window, and an `environment.yml` file. This will install all the requisite libraries and version of python. You can find all the requisite materials [here](https://github.com/jlubbersgeo/diffusion_modeling_walkthrough).
 
 ```bash
 cd path\to\environment.yml
