@@ -1,4 +1,4 @@
-name: diffusion_workshop
+name: C:\Users\jlubbers\AppData\Local\mambaforge\envs\diffusion_workshop
 channels:
   - defaults
   - conda-forge
@@ -16,4 +16,10 @@ dependencies:
   - mendeleev
   - statsmodels
   - tqdm
+  - pyyaml
+  - nbformat
+  - nbclient
+  - ipywidgets=8.0.4
+  - jupyter
+  - certifi
 prefix: C:\Users\jlubbers\AppData\Local\mambaforge\envs\diffusion_workshop
