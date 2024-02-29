@@ -30,6 +30,7 @@ format:
         light: [sandstone, theme_html_light.scss]
         dark: [slate, theme_html_dark.scss]
     bibliography: bibliography.bib
+    csl: american-geophysical-union.csl
 ---
 
 ::: callout-warning
